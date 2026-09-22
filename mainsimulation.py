@@ -1,10 +1,3 @@
-"""
-The Virtual Brain - Astrocytoma vs. Healthy EEG simulation:
-Runs a Reduced Wong-Wang simulation on a 192-region connectivity for a healthy
-and an astrocytoma-affected parameter set, records EEG (62 channels), and plots
-both conditions.
-"""
-
 from pathlib import Path
 
 import matplotlib.pyplot as plt

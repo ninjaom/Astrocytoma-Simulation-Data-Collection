@@ -1,0 +1,27 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Simulation outputs
+*.png
+*.jpg
+*.npy
+*.npz
+*.log
+
+# Personal/reference docs kept local only
+The Virtual Brian - Data Collection .pdf

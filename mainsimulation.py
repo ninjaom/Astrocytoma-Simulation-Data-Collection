@@ -15,9 +15,12 @@ CONNECTIVITY_FILE = DATA_DIR / "connectivity_192.zip"
 SENSORS_FILE = DATA_DIR / "eeg_unitvector_62.txt.bz2"
 REGION_MAPPING_FILE = DATA_DIR / "regionMapping_16k_192.txt"
 
-# Attempt 1 ran 10 s (10 * 1000). Attempts 2-3 shortened it to ~10 ms after the longer astrocytoma run produced NaN data.
-SIM_LENGTH_MS = 10
+# Attempt 1 ran 10 s (10 * 1000). Attempts 2-3 shortened it to ~10 ms after the longer astrocytoma
+# run produced NaN data with the (now unused) Attempt-2 parameters below. The current Attempt-3
+# parameters were re-verified stable (no NaNs, either condition) at 10 s before restoring this length.
+SIM_LENGTH_MS = 10000
 EEG_PERIOD_MS = 0.9765625  # 1024 Hz sampling
+POPULATION_PERIOD_MS = 1.0  # region-level ("population") sampling, used for manifold analysis
 
 
 def load_connectivity():
@@ -43,14 +46,26 @@ def build_models():
     )
     return healthy_model, astrocytoma_model
 
+def build_coupling():
+    # Attempts 1-3 used a=0.015: coupling this weak relative to the noise level below
+    # leaves regions fluctuating almost independently (participation ratio ~177/192,
+    # i.e. nearly full-rank/isotropic -- no real low-dimensional structure, and healthy
+    # vs. astrocytoma indistinguishable in a manifold analysis). a=2.0 was chosen by
+    # sweeping coupling/noise combinations for the smallest effective dimensionality
+    # that stays numerically stable (no NaNs) for both conditions at the full 10 s
+    # duration -- see manifold_analysis.py.
+    return coupling.Linear(a=np.array([2.0]))
+
+
 def build_integrators():
-    # Attempt 1 used one integrator (nsig=2**-5) for both conditions.
-    noise_healthy = Additive(nsig=np.array([2**-5]))
+    # nsig lowered from 2**-5 to 2**-8 alongside the coupling increase above, for the
+    # same reason: at the old noise level, coupling this strong still didn't produce
+    # low-dimensional structure, because stochastic input dominated the deterministic,
+    # connectivity-driven dynamics. See build_coupling().
+    noise_healthy = Additive(nsig=np.array([2**-8]))
     integrator_healthy = integrators.HeunStochastic(dt=0.1, noise=noise_healthy)
 
-    # Attempt 2 used nsig=2**-4 ("Increased noise") for the astrocytoma run.
-    # Attempt 3 reduced it to match the healthy brain.
-    noise_astro = Additive(nsig=np.array([2**-5]))
+    noise_astro = Additive(nsig=np.array([2**-8]))
     integrator_astro = integrators.HeunStochastic(dt=0.1, noise=noise_astro)
     return integrator_healthy, integrator_astro
 
@@ -65,20 +80,27 @@ def build_eeg_monitor():
         reference="average",  # Use average reference
     )
 
-def run_simulation(model, conn, cpl, integrator, eeg_monitor, duration=SIM_LENGTH_MS):
+def build_population_monitor(period=POPULATION_PERIOD_MS):
+    """Region-level (source-space) monitor: the model's raw state variable per region,
+    averaged over `period`. This is the appropriate signal for population-dynamics /
+    manifold analysis, as opposed to EEG, which is a lead-field mixture across regions
+    and loses information relative to the underlying region-level activity."""
+    return monitors.TemporalAverage(period=period)
+
+
+def run_simulation(model, conn, cpl, integrator, monitor_list, duration=SIM_LENGTH_MS):
+    """Run one condition with one or more monitors. Returns a list of (time, data)
+    tuples in the same order as `monitor_list`."""
     sim = simulator.Simulator(
         model=model,
         connectivity=conn,
         coupling=cpl,
         integrator=integrator,
-        monitors=[eeg_monitor],
+        monitors=monitor_list,
         simulation_length=duration,
     )
     sim.configure()
-    result = sim.run()
-    # Extract EEG monitor output (assumes one monitor)
-    time, data = result[0]
-    return time, data
+    return sim.run()
 
 def clean_data(data, label):
     n_bad = np.count_nonzero(~np.isfinite(data))
@@ -144,12 +166,12 @@ def plot_eeg(time, data, title, color, left_channels, right_channels, midline_ch
 def main():
     conn = load_connectivity()
     healthy_model, astrocytoma_model = build_models()
-    cpl = coupling.Linear(a=np.array([0.015]))
+    cpl = build_coupling()
     integrator_healthy, integrator_astro = build_integrators()
     eeg_monitor = build_eeg_monitor()
 
-    time_healthy, data_healthy = run_simulation(healthy_model, conn, cpl, integrator_healthy, eeg_monitor)
-    time_astro, data_astro = run_simulation(astrocytoma_model, conn, cpl, integrator_astro, eeg_monitor)
+    time_healthy, data_healthy = run_simulation(healthy_model, conn, cpl, integrator_healthy, [eeg_monitor])[0]
+    time_astro, data_astro = run_simulation(astrocytoma_model, conn, cpl, integrator_astro, [eeg_monitor])[0]
     print("Simulations complete.")
 
     data_healthy = clean_data(data_healthy, "Healthy")

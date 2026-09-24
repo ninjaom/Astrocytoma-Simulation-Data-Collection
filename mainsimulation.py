@@ -1,3 +1,6 @@
+"""Shared simulation setup (used by all three scripts) plus the original raw-EEG
+plotting script. See CODE_OVERVIEW.md for design-decision reasoning."""
+
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -6,21 +9,20 @@ from tvb.datatypes.region_mapping import RegionMapping
 from tvb.datatypes.sensors import SensorsEEG
 from tvb.simulator.lab import connectivity, coupling, integrators, models, monitors, simulator
 from tvb.simulator.noise import Additive
-#---------------------------------------
-
-# Configuration
 
 DATA_DIR = Path(__file__).parent / "data"
 CONNECTIVITY_FILE = DATA_DIR / "connectivity_192.zip"
 SENSORS_FILE = DATA_DIR / "eeg_unitvector_62.txt.bz2"
 REGION_MAPPING_FILE = DATA_DIR / "regionMapping_16k_192.txt"
 
-# Attempt 1 ran 10 s (10 * 1000). Attempts 2-3 shortened it to ~10 ms after the longer astrocytoma
-# run produced NaN data with the (now unused) Attempt-2 parameters below. The current Attempt-3
-# parameters were re-verified stable (no NaNs, either condition) at 10 s before restoring this length.
+# See CODE_OVERVIEW.md for why these constants have the values they do.
 SIM_LENGTH_MS = 10000
 EEG_PERIOD_MS = 0.9765625  # 1024 Hz sampling
 POPULATION_PERIOD_MS = 1.0  # region-level ("population") sampling, used for manifold analysis
+
+# Reduced Wong-Wang parameters per condition, shared with lesion.py.
+HEALTHY_PARAMS = {"a": 0.27, "w": 0.6, "I_o": 0.33, "tau_s": 100.0, "b": 0.108}
+ASTRO_PARAMS = {"a": 0.6, "w": 0.9, "I_o": 0.1, "tau_s": 80.0, "b": 0.2}
 
 
 def load_connectivity():
@@ -31,41 +33,22 @@ def load_connectivity():
 
 
 def build_models():
-    healthy_model = models.ReducedWongWang()
-
-    # Attempt 2 parameters (produced NaN data - kept for reference):
-    # a=0.5, w=0.8, I_o=0.2, tau_s=100.0, b=0.1
-
-    # Attempt 3 parameters:
-    astrocytoma_model = models.ReducedWongWang(
-        a=np.array([0.6]),  # Slightly increased excitability
-        w=np.array([0.9]),  # Slightly increased excitatory coupling
-        I_o=np.array([0.1]),  # Reduced baseline input to prevent too much inhibition
-        tau_s=np.array([80.0]),  # Reduced synaptic time constant
-        b=np.array([0.2]),  # Slightly increased slope of firing rate
-    )
+    healthy_model = models.ReducedWongWang(**{k: np.array([v]) for k, v in HEALTHY_PARAMS.items()})
+    astrocytoma_model = models.ReducedWongWang(**{k: np.array([v]) for k, v in ASTRO_PARAMS.items()})
     return healthy_model, astrocytoma_model
 
 def build_coupling():
-    # Attempts 1-3 used a=0.015: coupling this weak relative to the noise level below
-    # leaves regions fluctuating almost independently (participation ratio ~177/192,
-    # i.e. nearly full-rank/isotropic -- no real low-dimensional structure, and healthy
-    # vs. astrocytoma indistinguishable in a manifold analysis). a=2.0 was chosen by
-    # sweeping coupling/noise combinations for the smallest effective dimensionality
-    # that stays numerically stable (no NaNs) for both conditions at the full 10 s
-    # duration -- see manifold_analysis.py.
+    # a=2.0: see CODE_OVERVIEW.md for how this and the noise level below were tuned.
     return coupling.Linear(a=np.array([2.0]))
 
 
-def build_integrators():
-    # nsig lowered from 2**-5 to 2**-8 alongside the coupling increase above, for the
-    # same reason: at the old noise level, coupling this strong still didn't produce
-    # low-dimensional structure, because stochastic input dominated the deterministic,
-    # connectivity-driven dynamics. See build_coupling().
-    noise_healthy = Additive(nsig=np.array([2**-8]))
+def build_integrators(seed_healthy=42, seed_astro=43):
+    # nsig=2**-8; distinct seeds per condition are required, not cosmetic -- see
+    # CODE_OVERVIEW.md.
+    noise_healthy = Additive(nsig=np.array([2**-8]), noise_seed=seed_healthy)
     integrator_healthy = integrators.HeunStochastic(dt=0.1, noise=noise_healthy)
 
-    noise_astro = Additive(nsig=np.array([2**-8]))
+    noise_astro = Additive(nsig=np.array([2**-8]), noise_seed=seed_astro)
     integrator_astro = integrators.HeunStochastic(dt=0.1, noise=noise_astro)
     return integrator_healthy, integrator_astro
 
@@ -81,10 +64,7 @@ def build_eeg_monitor():
     )
 
 def build_population_monitor(period=POPULATION_PERIOD_MS):
-    """Region-level (source-space) monitor: the model's raw state variable per region,
-    averaged over `period`. This is the appropriate signal for population-dynamics /
-    manifold analysis, as opposed to EEG, which is a lead-field mixture across regions
-    and loses information relative to the underlying region-level activity."""
+    """Region-level (source-space) monitor -- see CODE_OVERVIEW.md."""
     return monitors.TemporalAverage(period=period)
 
 
@@ -125,17 +105,8 @@ def plot_overview(time_healthy, data_healthy, time_astro, data_astro):
     plt.show()
 
 
-# ---------------------------
-# Variation 1: split channels into left / right hemispheres
-# ---------------------------
 def map_channels_to_hemispheres(sensors, midline_tol=0.05):
-    """
-    Split channels by sensor x-coordinate:
-    In this sensor file +x is the subject's left (F3, C3, P3 have x > 0) and -x is the
-    right, matching the 10-20 convention of odd labels = left, even = right. Channels
-    within midline_tol of x = 0 (Fpz, Fz, FCz, Cz, CPz, Pz, POz, Oz) belong to neither
-    hemisphere and are returned separately.
-    """
+    """Split channels by sensor x-coordinate -- convention in CODE_OVERVIEW.md."""
     x = sensors.locations[:, 0]
     left_channels = np.flatnonzero(x > midline_tol)
     right_channels = np.flatnonzero(x < -midline_tol)

@@ -1,24 +1,5 @@
-"""Dimensionality reduction and trajectory-structure methods.
-
-Method roles (see project notes for the reasoning):
-  - PCA is the quantitative backbone: it's the only one of these that preserves
-    true Euclidean distances/angles, which curvature, tangling, and jPCA all
-    require to be meaningful. It also gives the eigenvalue spectrum used by
-    the dimensionality metrics in `geometry.py`.
-  - `fit_smoothed_factors` is a GPFA-*inspired* method for continuous-valued
-    data: factor analysis (like PCA, but models per-channel noise) followed by
-    per-factor Gaussian-process smoothing. This is NOT the original GPFA
-    (Yu et al. 2009), which is built for spike counts via a Poisson-like
-    observation model; that doesn't apply to continuous region/EEG amplitude
-    data. This is the natural continuous-data analogue -- same idea (shared
-    latent factors + explicit temporal smoothness), different observation
-    model -- and is labeled as such throughout rather than called "GPFA".
-  - jPCA is run on top of the PCA space and specifically looks for rotational
-    (oscillatory) structure.
-  - Isomap / UMAP are kept for qualitative visualization only -- not used for
-    any of the quantitative geometry metrics, since neither reliably
-    preserves the distances those metrics depend on.
-"""
+"""Dimensionality reduction and trajectory-structure methods. See CODE_OVERVIEW.md
+for each method's role and why it was chosen."""
 
 from __future__ import annotations
 
@@ -54,12 +35,8 @@ def fit_umap(X, n_components=3, n_neighbors=15, random_state=0):
 
 def fit_smoothed_factors(X, times, n_factors, length_scale=20.0, noise_level=1e-2,
                           max_points=1000):
-    """GPFA-inspired: factor analysis + per-factor GP smoothing (see module docstring).
-
-    `times` are in the same units as `length_scale` (ms here). `max_points`
-    subsamples the timebase before the GP fit (each fit is O(T^3)); the
-    smoothed curve is then linearly interpolated back to the full timebase.
-    """
+    """GPFA-inspired (not GPFA -- see CODE_OVERVIEW.md): factor analysis + per-factor
+    GP smoothing. `times` are in the same units as `length_scale` (ms here)."""
     from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.gaussian_process.kernels import RBF, WhiteKernel
 
@@ -78,24 +55,16 @@ def fit_smoothed_factors(X, times, n_factors, length_scale=20.0, noise_level=1e-
     smoothed = np.empty_like(factors_raw)
     smoothed_at_subsample = np.empty((len(sub_idx), n_factors))
     for k in range(n_factors):
-        # optimizer=None: fixed kernel, single posterior-mean solve (no repeated
-        # log-marginal-likelihood optimization), which is what keeps this
-        # tractable at T in the thousands.
+        # optimizer=None: fixed kernel, single solve -- keeps this tractable at T~10^4.
         gp = GaussianProcessRegressor(kernel=kernel, optimizer=None, normalize_y=True)
         gp.fit(t_sub, factors_raw[sub_idx, k])
         mean_sub = gp.predict(t_sub)
         smoothed_at_subsample[:, k] = mean_sub
         smoothed[:, k] = np.interp(times, t_sub.ravel(), mean_sub)
 
-    # Variance-retained is computed at the subsampled points only, comparing the GP's
-    # posterior mean there against the *same* raw points it was fit on. Comparing full-
-    # resolution raw variance against the full-resolution *interpolated* curve instead
-    # (as an earlier version of this function's caller did) isn't a like-for-like
-    # comparison -- piecewise-linear reconstruction from a subsample can legitimately
-    # have higher or lower variance than the original full-resolution noisy series
-    # regardless of how much the GP itself smoothed, which showed up as a nonsensical
-    # >100%-retained result for one condition. This version is a proper shrinkage
-    # ratio and is guaranteed <= 100% (up to floating-point slack) by construction.
+    # Variance-retained computed at the subsampled points only -- see CODE_OVERVIEW.md
+    # for why (comparing against the full-resolution interpolated curve instead once
+    # produced a nonsensical >100%-retained result).
     raw_var_sub = np.var(factors_raw[sub_idx], axis=0).sum()
     smoothed_var_sub = np.var(smoothed_at_subsample, axis=0).sum()
     variance_retained_fraction = float(smoothed_var_sub / raw_var_sub) if raw_var_sub > 0 else 0.0
@@ -109,11 +78,9 @@ def fit_smoothed_factors(X, times, n_factors, length_scale=20.0, noise_level=1e-
 
 
 def fit_jpca(X, dt):
-    """Fit the best-fit linear rotational dynamics M (skew-symmetric) such
-    that dX/dt ~= X @ M, following Churchland et al. 2012. Returns the fitted
-    M, its eigendecomposition, the dominant rotation plane, and the
-    trajectory projected into that plane.
-    """
+    """Best-fit skew-symmetric M such that dX/dt ~= X @ M (Churchland et al. 2012).
+    Returns M, its eigendecomposition, the dominant rotation plane, and the
+    trajectory projected into it."""
     X = np.asarray(X, dtype=float)
     Xc = X - X.mean(axis=0)
     Xdot = np.gradient(Xc, dt, axis=0)
@@ -121,10 +88,8 @@ def fit_jpca(X, dt):
     k = Xc.shape[1]
     pairs = [(i, j) for i in range(k) for j in range(i + 1, k)]
 
-    # Build the design matrix: each column is X @ E_ij for a basis
-    # skew-symmetric matrix E_ij (1 at (i,j), -1 at (j,i)); solving the
-    # resulting linear least-squares problem gives the coefficients that
-    # reconstruct the best-fit skew-symmetric M.
+    # Design matrix: each column is X @ E_ij for a basis skew-symmetric matrix E_ij;
+    # least-squares gives the coefficients that reconstruct the best-fit M.
     A = np.stack([_apply_skew_basis(Xc, i, j).reshape(-1) for i, j in pairs], axis=1)
     b = Xdot.reshape(-1)
     coeffs, *_ = np.linalg.lstsq(A, b, rcond=None)

@@ -1,20 +1,5 @@
-"""Manifold analysis of simulated healthy vs. astrocytoma-affected brain dynamics.
-
-Pipeline (see README for the methodology reasoning):
-  1. Simulate both conditions, capturing region-level ("population", 192-dim)
-     activity as the primary signal, plus EEG (62-dim, sensor space) as a
-     secondary comparison.
-  2. PCA is the quantitative backbone: full-spectrum PCA gives the
-     dimensionality metrics (participation ratio, # components for 90%
-     variance); a top-6-PC embedding is the shared space for jPCA, curvature,
-     and tangling, since those require distance/angle-preserving coordinates.
-  3. jPCA looks for rotational structure in that PCA space.
-  4. A GPFA-inspired smoothed-factor model (factor analysis + per-factor GP
-     smoothing) is fit as a second, independent dimensionality/structure
-     estimate.
-  5. Isomap and UMAP embeddings are produced for qualitative visualization
-     only -- not used for any quantitative metric.
-
+"""Static healthy-vs-astrocytoma manifold analysis. See README for the
+methodology and CODE_OVERVIEW.md for the reasoning behind specific choices.
 Outputs go to outputs/manifold_analysis/ as PNGs, plus a text summary on stdout.
 """
 
@@ -24,36 +9,16 @@ from pathlib import Path
 import numpy as np
 import mainsimulation as sim_module
 from analysis import geometry, manifold, plotting
+from analysis.timeseries import drop_burn_in, squeeze_monitor_data
 
 OUT_DIR = Path(__file__).parent / "outputs" / "manifold_analysis"
 COLORS = {"Healthy": "k", "Astrocytoma": "r"}
 
 N_PCA_COMPONENTS = 6      # shared space for jPCA / curvature / tangling
 N_GPFA_FACTORS = 8
-VIZ_SUBSAMPLE = 1200      # cap for Isomap/UMAP (both are expensive at T ~ 10^4)
-BURN_IN_MS = 200          # discard from every series before any analysis -- see below
-TRAJECTORY_WINDOW_MS = 2000  # smoothed-trajectory plot only: a full 10 s line at 1 ms
-# resolution is illegible regardless of true dimensionality; metrics still use the full duration, only this one plot is windowed for readability.
-
-
-def squeeze(data):
-    """TVB monitor output is (T, state_vars, nodes, modes); collapse to (T, nodes)."""
-    return np.asarray(data)[:, 0, :, 0]
-
-
-def drop_burn_in(time, data, burn_in_ms=BURN_IN_MS):
-    """Discard the initial transient before any analysis touches the data.
-
-    The simulator starts every region from the same fixed initial condition, which is
-    not a sample from the system's actual (noise-driven, coupled) dynamics. A factor
-    analysis / GP fit over the whole series can otherwise assign the single unusual
-    initial sample(s) an outsized influence -- this showed up as a spurious spike
-    dominating the smoothed-trajectory plot before this cutoff was added. Standard
-    practice for any stochastic simulation: drop the burn-in, analyze steady state.
-    """
-    time = np.asarray(time)
-    cutoff = np.searchsorted(time, time[0] + burn_in_ms)
-    return time[cutoff:], data[cutoff:]
+VIZ_SUBSAMPLE = 1200         # cap for Isomap/UMAP (both are expensive at T ~ 10^4)
+BURN_IN_MS = 200             # see CODE_OVERVIEW.md
+TRAJECTORY_WINDOW_MS = 2000  # smoothed-trajectory plot only -- see CODE_OVERVIEW.md
 
 
 def run_conditions(duration):
@@ -72,11 +37,11 @@ def run_conditions(duration):
         (t_eeg, d_eeg), (t_pop, d_pop) = sim_module.run_simulation(
             model, conn, cpl, integrator, [eeg_monitor, pop_monitor], duration=duration
         )
-        eeg_clean = sim_module.clean_data(squeeze(d_eeg), f"{label} EEG")
-        pop_clean = sim_module.clean_data(squeeze(d_pop), f"{label} population")
+        eeg_clean = sim_module.clean_data(squeeze_monitor_data(d_eeg), f"{label} EEG")
+        pop_clean = sim_module.clean_data(squeeze_monitor_data(d_pop), f"{label} population")
         results[label] = {
-            "eeg": drop_burn_in(t_eeg, eeg_clean),
-            "population": drop_burn_in(t_pop, pop_clean),
+            "eeg": drop_burn_in(t_eeg, eeg_clean, BURN_IN_MS),
+            "population": drop_burn_in(t_pop, pop_clean, BURN_IN_MS),
         }
         print(f"{label}: ran {duration} ms, population shape {d_pop.shape}, eeg shape {d_eeg.shape}")
     return results
@@ -174,12 +139,7 @@ def main():
     plotting.plot_jpca_plane(jpca_projections, labels, colors,
                               "jPCA dominant rotation plane", OUT_DIR / "jpca_plane.png")
 
-    # ---- GPFA-inspired smoothed factors ----
-    # Also used for visualization: a raw single trajectory at full time resolution
-    # looks tangled/fuzzy regardless of true dimensionality, because per-timestep noise
-    # dominates the picture at that resolution (see pca_trajectory.png). The smoothed
-    # factors are the denoised version of the same population dynamics, so they're what
-    # actually shows the shape the dimensionality metrics above are describing.
+    # ---- GPFA-inspired smoothed factors (also used for the trajectory plot below) ----
     print("\n=== GPFA-inspired smoothed factors (population space) ===")
     smoothed_trajectories = []
     for label in labels:

@@ -1,11 +1,5 @@
-"""Trajectory-geometry metrics for low-dimensional neural population dynamics.
-
-These operate on an already-reduced trajectory X of shape (T, D) (e.g. the top D
-principal components of a population recording over time), sampled at a fixed
-timestep `dt`. They quantify the *shape* of the trajectory rather than its raw
-values, which is what makes them comparable across conditions with otherwise
-different amplitudes/scales.
-"""
+"""Trajectory-geometry metrics: pure math on a (T, D) array + timestep `dt`.
+See CODE_OVERVIEW.md for what each metric means and why."""
 
 from __future__ import annotations
 
@@ -13,14 +7,7 @@ import numpy as np
 
 
 def participation_ratio(eigenvalues):
-    """Effective dimensionality of a covariance spectrum.
-
-    PR = (sum(eig))^2 / sum(eig^2). Equals D if all D eigenvalues are equal
-    (activity spread evenly across D dimensions), and approaches 1 if a single
-    eigenvalue dominates (activity effectively 1-dimensional). Standard measure
-    in the population-dynamics literature for "how many dimensions are really
-    being used" without picking an arbitrary variance-explained cutoff.
-    """
+    """Effective dimensionality: (sum(eig))^2 / sum(eig^2). See CODE_OVERVIEW.md."""
     eigenvalues = np.asarray(eigenvalues, dtype=float)
     eigenvalues = eigenvalues[eigenvalues > 0]
     if eigenvalues.size == 0:
@@ -39,20 +26,35 @@ def cumulative_variance_dimensionality(eigenvalues, threshold=0.90):
     return int(np.searchsorted(cumulative, threshold) + 1)
 
 
+def sliding_participation_ratio(data, window_size, step):
+    """Participation ratio recomputed in a sliding window over time (`data` is
+    (T, D) raw channels). Returns (center_indices, pr_values)."""
+    data = np.asarray(data, dtype=float)
+    T = data.shape[0]
+    if window_size > T:
+        raise ValueError(f"window_size ({window_size}) exceeds series length ({T})")
+
+    starts = np.arange(0, T - window_size + 1, step)
+    centers = starts + window_size // 2
+    pr_values = np.empty(len(starts))
+    for i, start in enumerate(starts):
+        window = data[start:start + window_size]
+        window = window - window.mean(axis=0)  # PCA's mean-subtraction step
+        cov = np.cov(window, rowvar=False)
+        eigvals = np.linalg.eigvalsh(cov)
+        pr_values[i] = participation_ratio(eigvals)
+
+    return centers, pr_values
+
+
 def trajectory_velocity(X, dt):
     """Central-difference velocity dX/dt, shape (T, D)."""
     return np.gradient(np.asarray(X, dtype=float), dt, axis=0)
 
 
 def trajectory_curvature(X, dt, eps=1e-8):
-    """Generalized (n-dimensional) curvature of a trajectory at every timepoint.
-
-    kappa(t) = |a_perp(t)| / |v(t)|^2, where a_perp is the acceleration
-    component orthogonal to velocity. This is the natural n-D generalization
-    of the classic 3D Frenet curvature |v x a| / |v|^3: a straight (even if
-    accelerating) trajectory has kappa = 0; a tightly turning one has large
-    kappa. Returns an array of shape (T,).
-    """
+    """n-dimensional curvature at every timepoint: kappa(t) = |a_perp(t)| / |v(t)|^2.
+    See CODE_OVERVIEW.md. Returns an array of shape (T,)."""
     X = np.asarray(X, dtype=float)
     v = trajectory_velocity(X, dt)
     a = trajectory_velocity(v, dt)
@@ -65,19 +67,8 @@ def trajectory_curvature(X, dt, eps=1e-8):
 
 
 def trajectory_tangling(X, dt, eps_frac=0.1):
-    """Trajectory tangling Q(t), after Russo et al. 2018.
-
-    Q(t) = max_{t'} [ |v(t) - v(t')|^2 / (|x(t) - x(t')|^2 + eps) ]
-
-    High Q at a timepoint means there exists another point on the trajectory
-    that is nearby in state (small denominator) but moving in a very
-    different direction (large numerator) -- i.e. the local future is hard to
-    predict from position alone. `eps` is set as `eps_frac` times the mean
-    squared distance from the trajectory mean, following the original paper's
-    approach of regularizing by a fraction of the data's overall variance
-    (prevents division blow-up near self-intersections without needing units
-    to be pre-normalized).
-    """
+    """Trajectory tangling Q(t) = max_t' [|v(t)-v(t')|^2 / (|x(t)-x(t')|^2 + eps)],
+    after Russo et al. 2018. See CODE_OVERVIEW.md."""
     X = np.asarray(X, dtype=float)
     v = trajectory_velocity(X, dt)
     T = X.shape[0]

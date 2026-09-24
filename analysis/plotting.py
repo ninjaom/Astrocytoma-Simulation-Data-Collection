@@ -1,4 +1,4 @@
-"""Comparison plots for the manifold analysis (healthy vs. astrocytoma)."""
+"""Figures for the manifold and lesion-growth analyses."""
 
 from __future__ import annotations
 
@@ -8,9 +8,8 @@ import numpy as np
 
 def plot_pca_trajectories(embeddings, labels, colors, title, out_path,
                            axis_labels=("PC1", "PC2", "PC3")):
-    """3D trajectory plot (top-3 dims of whatever embedding is passed in), one line
-    per condition. `axis_labels` defaults to PCA's but is overridable for other
-    3-dim embeddings (e.g. the smoothed-factor trajectory)."""
+    """3D trajectory plot, one line per condition. `axis_labels` is overridable for
+    non-PCA 3-dim embeddings (e.g. the smoothed-factor trajectory)."""
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection="3d")
     for emb, label, color in zip(embeddings, labels, colors):
@@ -73,6 +72,28 @@ def plot_geometry_timeseries(time, series_by_condition, colors, title, ylabel, o
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_severity_and_dimensionality(severity_time, severity, pr_by_condition, colors, out_path):
+    """Two-panel figure: lesion severity g(t) on top, sliding-window participation
+    ratio below, sharing a time axis."""
+    fig, (ax_sev, ax_pr) = plt.subplots(2, 1, figsize=(9, 6.5), sharex=True)
+
+    ax_sev.plot(severity_time, severity, color="tab:purple", linewidth=1.2)
+    ax_sev.set_ylabel("Lesion severity g(t)")
+    ax_sev.set_title("Lesion growth schedule")
+    ax_sev.set_ylim(-0.05, 1.05)
+
+    for cond, (times, pr) in pr_by_condition.items():
+        ax_pr.plot(times, pr, label=cond, color=colors[cond], marker="o", markersize=3, linewidth=1.0)
+    ax_pr.set_xlabel("Time (ms)")
+    ax_pr.set_ylabel("Participation ratio\n(sliding window)")
+    ax_pr.set_title("Region-level effective dimensionality over time")
+    ax_pr.legend()
+
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
